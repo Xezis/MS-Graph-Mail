@@ -4,6 +4,24 @@
 
 MS::Graph::Mail is a Perl module for interacting with the Microsoft Graph Mail API. It provides a complete interface for managing emails across Microsoft 365 mailboxes using OAuth2 Client Credentials authentication.
 
+## Important: Commit Guidelines for AI Assistants
+
+**CRITICAL RULE**: When creating commits for this project, DO NOT include any references to:
+- Claude
+- Claude Code
+- Anthropic
+- Any AI assistant branding or attribution
+
+Commit messages and code comments should be generic and professional. Focus on describing the actual changes made, not the tool that made them.
+
+Examples:
+- ✅ GOOD: "Add email forwarding functionality"
+- ✅ GOOD: "Fix pagination handling in message listing"
+- ✅ GOOD: "Update documentation with usage examples"
+- ❌ BAD: "Add feature with Claude Code"
+- ❌ BAD: "Generated with Claude"
+- ❌ BAD: "Co-Authored-By: Claude Sonnet..."
+
 ## Project Structure
 
 ```
