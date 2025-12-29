@@ -1,0 +1,34 @@
+# Build artifacts (ExtUtils::MakeMaker)
+Makefile
+Makefile.old
+blib/
+pm_to_blib
+MYMETA.*
+META.yml
+META.json
+
+# Distribution
+*.tar.gz
+MS-Graph-Mail-*/
+
+# Testing
+cover_db/
+.prove
+*.bak
+
+# Local dependencies
+local/
+.carton/
+cpanfile.snapshot
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
