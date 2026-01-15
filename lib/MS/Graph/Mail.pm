@@ -13,7 +13,7 @@ use MS::Graph::Mail::Message;
 use MS::Graph::Mail::Folder;
 use MS::Graph::Mail::Attachment;
 
-our $VERSION = '0.15';
+our $VERSION = '0.20';
 
 sub new {
     my ($class, %args) = @_;
@@ -203,6 +203,42 @@ sub send_mail {
     croak "Missing required parameter: subject" unless defined $args{subject};
     croak "Missing required parameter: body" unless defined $args{body};
 
+    # Handle file_paths parameter - auto-detect if upload sessions needed
+    if ($args{file_paths}) {
+        my $file_paths = ref($args{file_paths}) eq 'ARRAY'
+            ? $args{file_paths}
+            : [$args{file_paths}];
+
+        # Validate all files exist
+        for my $file_path (@$file_paths) {
+            my $size = -s $file_path;
+            croak "File not found: $file_path" unless defined $size;
+            croak "File exceeds maximum size of 150MB: $file_path"
+                if $size > MS::Graph::Mail::Attachment::MAX_ATTACHMENT_SIZE;
+        }
+
+        # Check if any file needs upload session
+        my $needs_upload_session = 0;
+        for my $file_path (@$file_paths) {
+            if (MS::Graph::Mail::Attachment->requires_upload_session($file_path)) {
+                $needs_upload_session = 1;
+                last;
+            }
+        }
+
+        if ($needs_upload_session) {
+            # Use draft + upload session workflow for large files
+            return $self->_send_mail_with_upload_sessions(%args, file_paths => $file_paths);
+        } else {
+            # All files are small - convert to attachments array
+            $args{attachments} = [
+                map { MS::Graph::Mail::Attachment->create_file_attachment(file_path => $_) }
+                @$file_paths
+            ];
+        }
+    }
+
+    # Standard sendMail workflow (single POST)
     my $path = sprintf('/users/%s/sendMail', uri_escape($args{user_id}));
 
     my $message = {
@@ -238,6 +274,227 @@ sub send_mail {
     };
 
     $self->{_client}->post($path, $body);
+    return 1;
+}
+
+#
+# Large attachment operations
+#
+
+sub create_draft_message {
+    my ($self, %args) = @_;
+
+    croak "Missing required parameter: user_id" unless $args{user_id};
+    croak "Missing required parameter: subject" unless defined $args{subject};
+    croak "Missing required parameter: body" unless defined $args{body};
+    croak "Missing required parameter: to" unless $args{to};
+
+    my $path = sprintf('/users/%s/messages', uri_escape($args{user_id}));
+
+    my $message = {
+        subject => $args{subject},
+        body    => {
+            contentType => $args{body_type} // 'Text',
+            content     => $args{body},
+        },
+        toRecipients => $self->_format_recipients($args{to}),
+    };
+
+    if ($args{cc}) {
+        $message->{ccRecipients} = $self->_format_recipients($args{cc});
+    }
+    if ($args{bcc}) {
+        $message->{bccRecipients} = $self->_format_recipients($args{bcc});
+    }
+    if ($args{importance}) {
+        $message->{importance} = $args{importance};
+    }
+
+    my $response = $self->{_client}->post($path, $message);
+    return MS::Graph::Mail::Message->new($response);
+}
+
+sub send_draft_message {
+    my ($self, %args) = @_;
+
+    croak "Missing required parameter: user_id" unless $args{user_id};
+    croak "Missing required parameter: message_id" unless $args{message_id};
+
+    my $path = sprintf('/users/%s/messages/%s/send',
+        uri_escape($args{user_id}),
+        uri_escape($args{message_id})
+    );
+
+    $self->{_client}->post($path, undef);
+    return 1;
+}
+
+sub add_small_attachment {
+    my ($self, %args) = @_;
+
+    croak "Missing required parameter: user_id" unless $args{user_id};
+    croak "Missing required parameter: message_id" unless $args{message_id};
+    croak "Missing required parameter: file_path" unless $args{file_path};
+
+    my $path = sprintf('/users/%s/messages/%s/attachments',
+        uri_escape($args{user_id}),
+        uri_escape($args{message_id})
+    );
+
+    my $attachment = MS::Graph::Mail::Attachment->create_file_attachment(
+        file_path    => $args{file_path},
+        name         => $args{name},
+        content_type => $args{content_type},
+    );
+
+    my $response = $self->{_client}->post($path, $attachment);
+    return MS::Graph::Mail::Attachment->new($response);
+}
+
+sub create_upload_session {
+    my ($self, %args) = @_;
+
+    croak "Missing required parameter: user_id" unless $args{user_id};
+    croak "Missing required parameter: message_id" unless $args{message_id};
+    croak "Missing required parameter: file_path" unless $args{file_path};
+
+    my $file_path = $args{file_path};
+    my $file_size = -s $file_path;
+
+    croak "File not found: $file_path" unless defined $file_size;
+    croak "File exceeds maximum size of 150MB"
+        if $file_size > MS::Graph::Mail::Attachment::MAX_ATTACHMENT_SIZE;
+
+    my $file_name = $args{name} // (split m{/}, $file_path)[-1];
+
+    my $path = sprintf('/users/%s/messages/%s/attachments/createUploadSession',
+        uri_escape($args{user_id}),
+        uri_escape($args{message_id})
+    );
+
+    my $body = {
+        AttachmentItem => {
+            attachmentType => 'file',
+            name           => $file_name,
+            size           => $file_size,
+        }
+    };
+
+    my $response = $self->{_client}->post($path, $body);
+    return {
+        upload_url     => $response->{uploadUrl},
+        expiration     => $response->{expirationDateTime},
+        file_path      => $file_path,
+        file_size      => $file_size,
+        file_name      => $file_name,
+    };
+}
+
+sub upload_large_attachment {
+    my ($self, %args) = @_;
+
+    croak "Missing required parameter: upload_url" unless $args{upload_url};
+    croak "Missing required parameter: file_path" unless $args{file_path};
+    croak "Missing required parameter: file_size" unless $args{file_size};
+
+    my $upload_url = $args{upload_url};
+    my $file_path  = $args{file_path};
+    my $file_size  = $args{file_size};
+    my $chunk_size = MS::Graph::Mail::Attachment::UPLOAD_CHUNK_SIZE;
+    my $progress_callback = $args{progress_callback};
+
+    open my $fh, '<:raw', $file_path
+        or croak "Cannot open file '$file_path': $!";
+
+    my $offset = 0;
+    my $response;
+
+    while ($offset < $file_size) {
+        my $remaining = $file_size - $offset;
+        my $current_chunk_size = $remaining < $chunk_size ? $remaining : $chunk_size;
+
+        my $chunk;
+        my $bytes_read = read($fh, $chunk, $current_chunk_size);
+        croak "Error reading file: $!" unless defined $bytes_read;
+        croak "Unexpected end of file" if $bytes_read == 0;
+
+        my $range_end = $offset + $bytes_read - 1;
+        my $content_range = "bytes $offset-$range_end/$file_size";
+
+        $response = $self->{_client}->put_raw(
+            $upload_url,
+            $chunk,
+            content_range => $content_range,
+        );
+
+        $offset += $bytes_read;
+
+        if ($progress_callback) {
+            $progress_callback->($offset, $file_size);
+        }
+    }
+
+    close $fh;
+
+    return MS::Graph::Mail::Attachment->new($response) if $response && $response->{id};
+    return $response;
+}
+
+# Internal method for sending mail with upload sessions (large attachments)
+sub _send_mail_with_upload_sessions {
+    my ($self, %args) = @_;
+
+    my $file_paths = $args{file_paths};
+
+    # Create draft message
+    my $draft = $self->create_draft_message(
+        user_id    => $args{user_id},
+        to         => $args{to},
+        cc         => $args{cc},
+        bcc        => $args{bcc},
+        subject    => $args{subject},
+        body       => $args{body},
+        body_type  => $args{body_type},
+        importance => $args{importance},
+    );
+
+    my $message_id = $draft->id;
+    my $progress_callback = $args{progress_callback};
+
+    # Attach each file
+    for my $file_path (@$file_paths) {
+        my $file_size = -s $file_path;
+
+        if (MS::Graph::Mail::Attachment->requires_upload_session($file_path)) {
+            # Large file - use upload session
+            my $session = $self->create_upload_session(
+                user_id    => $args{user_id},
+                message_id => $message_id,
+                file_path  => $file_path,
+            );
+
+            $self->upload_large_attachment(
+                upload_url        => $session->{upload_url},
+                file_path         => $file_path,
+                file_size         => $session->{file_size},
+                progress_callback => $progress_callback,
+            );
+        } else {
+            # Small file - use Base64
+            $self->add_small_attachment(
+                user_id    => $args{user_id},
+                message_id => $message_id,
+                file_path  => $file_path,
+            );
+        }
+    }
+
+    # Send the draft
+    $self->send_draft_message(
+        user_id    => $args{user_id},
+        message_id => $message_id,
+    );
+
     return 1;
 }
 

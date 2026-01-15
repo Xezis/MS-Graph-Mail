@@ -8,7 +8,7 @@ A Perl module for interacting with Microsoft Graph Mail API. Manage emails acros
 - **Immutable IDs** - Stable message identifiers by default
 - **Full mail operations** - List, read, send, forward, move, delete messages
 - **Folder management** - List and navigate mail folders
-- **Attachments** - Download and send file attachments
+- **Attachments** - Download and send file attachments (including large files up to 150MB)
 - **Pagination** - Automatic handling of paginated results
 - **Rate limit handling** - Automatic retry with backoff and throttle monitoring
 
@@ -206,11 +206,52 @@ $mail->send_mail(
 
 ### Send with Attachments
 
+Use `file_paths` for any file size - the module automatically handles upload sessions for large files:
+
+```perl
+$mail->send_mail(
+    user_id    => 'sender@domain.com',
+    to         => ['recipient@example.com'],
+    subject    => 'Files attached',
+    body       => 'Please see the attached files.',
+    file_paths => ['/path/to/small.pdf', '/path/to/large.zip'],
+);
+```
+
+The module automatically:
+- Uses Base64 encoding for files under 3MB (single POST)
+- Creates upload sessions for files 3MB-150MB (chunked PUT)
+
+**File size limits:**
+| Size | Method |
+|------|--------|
+| Under 3MB | Standard Base64 attachment |
+| 3MB - 150MB | Upload session with chunked uploads |
+| Over 150MB | Not supported by Microsoft Graph API |
+
+For progress tracking on large uploads:
+
+```perl
+$mail->send_mail(
+    user_id    => 'sender@domain.com',
+    to         => ['recipient@example.com'],
+    subject    => 'Large file',
+    body       => 'Uploading...',
+    file_paths => ['/path/to/large.zip'],
+    progress_callback => sub {
+        my ($uploaded, $total) = @_;
+        printf "Progress: %d%%\n", int($uploaded / $total * 100);
+    },
+);
+```
+
+You can also use pre-encoded attachments for backward compatibility:
+
 ```perl
 use MS::Graph::Mail::Attachment;
 
 my $attachment = MS::Graph::Mail::Attachment->create_file_attachment(
-    file_path => '/path/to/document.pdf',
+    file_path => '/path/to/small.pdf',
 );
 
 $mail->send_mail(
@@ -218,7 +259,7 @@ $mail->send_mail(
     to          => ['recipient@example.com'],
     subject     => 'Document attached',
     body        => 'Please find the document attached.',
-    attachments => [$attachment],
+    attachments => [$attachment],  # Pre-encoded, only for files < 3MB
 );
 ```
 
@@ -404,9 +445,17 @@ See the `examples/` directory:
 
 ```bash
 # List unread messages
-perl examples/list_unread.pl --help
 perl examples/list_unread.pl user@domain.com
+
+# Send email (with optional attachments of any size)
+perl examples/send_mail.pl sender@domain.com recipient@example.com
+perl examples/send_mail.pl sender@domain.com recipient@example.com file1.pdf file2.zip --progress
+
+# Send with single attachment
+perl examples/send_with_attachment.pl sender@domain.com recipient@example.com /path/to/file.pdf
 ```
+
+Run any script with `--help` for full usage details.
 
 ## License
 

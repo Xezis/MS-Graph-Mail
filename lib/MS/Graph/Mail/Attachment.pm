@@ -6,7 +6,14 @@ use warnings;
 
 use MIME::Base64 qw(decode_base64 encode_base64);
 
-our $VERSION = '0.15';
+our $VERSION = '0.20';
+
+# Size thresholds for attachment handling
+use constant {
+    SMALL_ATTACHMENT_THRESHOLD => 3 * 1024 * 1024,   # 3MB - use Base64 below this
+    UPLOAD_CHUNK_SIZE          => 4 * 1024 * 1024,   # 4MB - chunk size for upload sessions
+    MAX_ATTACHMENT_SIZE        => 150 * 1024 * 1024, # 150MB - maximum supported
+};
 
 sub new {
     my ($class, $data) = @_;
@@ -106,6 +113,20 @@ sub create_file_attachment {
         contentType   => $args{content_type} // 'application/octet-stream',
         contentBytes  => $content_bytes,
     };
+}
+
+# Get file size (class method)
+sub get_file_size {
+    my ($class, $file_path) = @_;
+    return -s $file_path;
+}
+
+# Check if file requires upload session
+sub requires_upload_session {
+    my ($class, $file_path) = @_;
+    my $size = $class->get_file_size($file_path);
+    return 0 unless defined $size;
+    return $size >= SMALL_ATTACHMENT_THRESHOLD;
 }
 
 # Human-readable size

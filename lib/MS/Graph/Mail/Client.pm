@@ -12,7 +12,7 @@ use URI::Escape qw(uri_escape);
 use Carp qw(croak);
 use Try::Tiny;
 
-our $VERSION = '0.15';
+our $VERSION = '0.20';
 
 use constant {
     BASE_URL              => 'https://graph.microsoft.com/v1.0',
@@ -60,6 +60,68 @@ sub patch {
 sub delete {
     my ($self, $path, %options) = @_;
     return $self->_request('DELETE', $path, undef, %options);
+}
+
+sub put {
+    my ($self, $path, $body, %options) = @_;
+    return $self->_request('PUT', $path, $body, %options);
+}
+
+# PUT raw binary content to an absolute URL (for upload sessions)
+sub put_raw {
+    my ($self, $url, $binary_content, %options) = @_;
+
+    my $retries = 0;
+    my $max_retries = $self->{max_retries};
+    my $retry_delay = $self->{retry_delay};
+
+    while ($retries < $max_retries) {
+        my $request = HTTP::Request->new('PUT' => $url);
+
+        # Set headers for binary upload
+        $request->header('Authorization' => 'Bearer ' . $self->{auth}->get_token());
+        $request->header('Content-Type' => 'application/octet-stream');
+        $request->header('Content-Length' => length($binary_content));
+
+        # Add Content-Range header if provided
+        if ($options{content_range}) {
+            $request->header('Content-Range' => $options{content_range});
+        }
+
+        # Set binary content
+        $request->content($binary_content);
+
+        my $response = $self->{_ua}->request($request);
+
+        # Monitor throttle proximity header
+        $self->_check_throttle_header($response);
+
+        # Handle rate limiting
+        if ($response->code == 429) {
+            my $retry_after = $response->header('Retry-After') // ($retry_delay * (2 ** $retries));
+            sleep($retry_after);
+            $retries++;
+            next;
+        }
+
+        # Handle service unavailable
+        if ($response->code == 503) {
+            sleep($retry_delay * (2 ** $retries));
+            $retries++;
+            next;
+        }
+
+        # Handle token expiry (401)
+        if ($response->code == 401 && $retries == 0) {
+            $self->{auth}->clear_token();
+            $retries++;
+            next;
+        }
+
+        return $self->_handle_response($response, 'PUT');
+    }
+
+    croak "Max retries exceeded for PUT request: $url";
 }
 
 sub _request {

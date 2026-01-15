@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 10;
+use Test::More tests => 14;
 use Test::Exception;
 use MIME::Base64 qw(encode_base64);
 use File::Temp qw(tempfile tempdir);
@@ -148,4 +148,51 @@ subtest 'create_file_attachment from content' => sub {
     is($att_data->{name}, 'inline.txt', 'name set');
     is($att_data->{contentType}, 'text/plain', 'content type set');
     ok($att_data->{contentBytes}, 'has content bytes');
+};
+
+subtest 'size constants are defined' => sub {
+    is(MS::Graph::Mail::Attachment::SMALL_ATTACHMENT_THRESHOLD, 3 * 1024 * 1024,
+       'small attachment threshold is 3MB');
+    is(MS::Graph::Mail::Attachment::UPLOAD_CHUNK_SIZE, 4 * 1024 * 1024,
+       'upload chunk size is 4MB');
+    is(MS::Graph::Mail::Attachment::MAX_ATTACHMENT_SIZE, 150 * 1024 * 1024,
+       'max attachment size is 150MB');
+};
+
+subtest 'get_file_size returns correct size' => sub {
+    my ($fh, $filename) = tempfile(SUFFIX => '.txt');
+    print $fh "A" x 1000;
+    close $fh;
+
+    my $size = MS::Graph::Mail::Attachment->get_file_size($filename);
+    is($size, 1000, 'get_file_size returns correct size');
+
+    unlink $filename;
+};
+
+subtest 'get_file_size returns undef for missing file' => sub {
+    my $size = MS::Graph::Mail::Attachment->get_file_size('/nonexistent/path/file.txt');
+    is($size, undef, 'get_file_size returns undef for missing file');
+};
+
+subtest 'requires_upload_session detects large files' => sub {
+    # Create small file (under threshold)
+    my ($fh_small, $small_file) = tempfile(SUFFIX => '.txt');
+    print $fh_small "A" x 1000;
+    close $fh_small;
+
+    ok(!MS::Graph::Mail::Attachment->requires_upload_session($small_file),
+       'small file does not require upload session');
+
+    # Create file at threshold (3MB)
+    my $threshold = MS::Graph::Mail::Attachment::SMALL_ATTACHMENT_THRESHOLD;
+    my ($fh_large, $large_file) = tempfile(SUFFIX => '.bin');
+    print $fh_large "X" x $threshold;
+    close $fh_large;
+
+    ok(MS::Graph::Mail::Attachment->requires_upload_session($large_file),
+       'file at threshold requires upload session');
+
+    unlink $small_file;
+    unlink $large_file;
 };
