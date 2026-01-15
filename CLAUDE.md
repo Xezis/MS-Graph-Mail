@@ -280,3 +280,66 @@ cpanm --installdeps .
 - Module version is defined in `lib/MS/Graph/Mail.pm`
 - Follows semantic versioning
 - Update VERSION and Changes file for releases
+
+## Release Process
+
+When creating a new release:
+
+### 1. Update VERSION in all module files
+
+Update `$VERSION` in all 6 module files:
+- `lib/MS/Graph/Mail.pm`
+- `lib/MS/Graph/Mail/Auth.pm`
+- `lib/MS/Graph/Mail/Client.pm`
+- `lib/MS/Graph/Mail/Message.pm`
+- `lib/MS/Graph/Mail/Folder.pm`
+- `lib/MS/Graph/Mail/Attachment.pm`
+
+### 2. Run tests
+
+```bash
+prove -l t/
+```
+
+### 3. Create commit
+
+```bash
+git add -A
+git commit -m "Release vX.YZ: Brief description of changes"
+```
+
+### 4. Create git tag
+
+```bash
+git tag vX.YZ
+```
+
+### 5. Push to remote
+
+```bash
+git push origin main
+git push origin vX.YZ
+```
+
+### 6. Create GitHub release
+
+Use `gh` CLI to create a release with consistent naming:
+
+```bash
+gh release create vX.YZ --title "vX.YZ - Short Description" --notes "Release notes here"
+```
+
+**Release title format**: `vX.YZ - Short Description`
+
+Examples:
+- `v0.10 - Initial Release`
+- `v0.15 - Rate Limit Handling`
+- `v0.20 - Large File Attachment Support`
+
+### 7. Verify release
+
+```bash
+gh release list
+```
+
+Ensure the new release is marked as "Latest".
