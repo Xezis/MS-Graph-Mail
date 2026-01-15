@@ -10,6 +10,7 @@ A Perl module for interacting with Microsoft Graph Mail API. Manage emails acros
 - **Folder management** - List and navigate mail folders
 - **Attachments** - Download and send file attachments
 - **Pagination** - Automatic handling of paginated results
+- **Rate limit handling** - Automatic retry with backoff and throttle monitoring
 
 ## Requirements
 
@@ -313,6 +314,76 @@ try {
     }
 };
 ```
+
+## Rate Limits and Application Responsibilities
+
+This module automatically handles transient errors and rate limiting responses from Microsoft Graph (HTTP 429). However, applications using this module are responsible for managing their own request patterns to stay within Microsoft's limits.
+
+### What This Module Handles
+
+- **Automatic retry** on HTTP 429 (rate limited) with `Retry-After` header respect
+- **Automatic retry** on HTTP 503 (service unavailable) with exponential backoff
+- **Token refresh** on HTTP 401 (expired token)
+- **Pagination** of large result sets
+- **Throttle monitoring** via `get_throttle_state()` and optional callback
+
+### Configuring Retry Behavior
+
+```perl
+my $mail = MS::Graph::Mail->new(
+    tenant_id     => '...',
+    client_id     => '...',
+    client_secret => '...',
+    max_retries   => 5,        # default: 3
+    retry_delay   => 2,        # default: 1 second
+    throttle_callback => sub {
+        my ($pct) = @_;
+        warn "Approaching rate limit: $pct";
+    },
+);
+
+# Check throttle state after requests
+my $state = $mail->get_throttle_state();
+if ($state->{is_near_limit}) {
+    sleep(1);  # Proactive slowdown
+}
+```
+
+### Application Responsibilities
+
+| Limit | Value | Your Responsibility |
+|-------|-------|---------------------|
+| Sending rate | 30 messages/minute | Throttle your send operations |
+| Daily recipients | 10,000 per 24 hours | Track recipient counts |
+| Concurrent requests | 4 per mailbox | Limit parallel API calls |
+| Sustainable rate | 4-10 requests/second | Don't burst at maximum speed |
+
+### Recommended Patterns
+
+**For bulk sending:**
+
+```perl
+use Time::HiRes qw(sleep);
+
+for my $recipient (@recipients) {
+    $mail->send_mail(
+        user_id => 'sender@domain.com',
+        to      => [$recipient],
+        subject => 'Newsletter',
+        body    => $content,
+    );
+    sleep(2);  # ~30 messages/minute
+}
+```
+
+**For high-volume reading:**
+
+- Use `select` to limit returned fields
+- Use `filter` to narrow results server-side
+- Consider delta queries for incremental sync
+- Use webhooks instead of polling when possible
+
+See [LIMITS.md](LIMITS.md) for detailed Microsoft Graph rate limit documentation.
 
 ## Running Tests
 

@@ -13,7 +13,7 @@ use MS::Graph::Mail::Message;
 use MS::Graph::Mail::Folder;
 use MS::Graph::Mail::Attachment;
 
-our $VERSION = '0.10';
+our $VERSION = '0.15';
 
 sub new {
     my ($class, %args) = @_;
@@ -31,6 +31,9 @@ sub new {
     my $client = MS::Graph::Mail::Client->new(
         auth              => $auth,
         use_immutable_ids => $args{use_immutable_ids} // 1,
+        max_retries       => $args{max_retries},
+        retry_delay       => $args{retry_delay},
+        throttle_callback => $args{throttle_callback},
     );
 
     my $self = bless {
@@ -459,6 +462,11 @@ sub _format_recipients {
     ];
 }
 
+sub get_throttle_state {
+    my ($self) = @_;
+    return $self->{_client}->get_throttle_state();
+}
+
 1;
 
 __END__
@@ -527,6 +535,35 @@ Optional parameters:
 =over 4
 
 =item * use_immutable_ids - Use immutable IDs (default: 1)
+
+=item * max_retries - Maximum retry attempts for rate limiting/errors (default: 3)
+
+=item * retry_delay - Base delay in seconds for exponential backoff (default: 1)
+
+=item * throttle_callback - Code reference called when API throttle percentage >= 0.8.
+Receives throttle percentage as argument. Use this for proactive rate limiting.
+
+=back
+
+=head1 RATE LIMIT MONITORING
+
+=head2 get_throttle_state()
+
+Returns a hash reference with throttle status:
+
+    my $state = $mail->get_throttle_state();
+    if ($state->{is_near_limit}) {
+        # Slow down requests
+        sleep(1);
+    }
+
+Keys:
+
+=over 4
+
+=item * last_throttle_percentage - Last observed throttle value (0.0-1.8+), or undef
+
+=item * is_near_limit - Boolean, true if percentage >= 0.8
 
 =back
 

@@ -12,12 +12,13 @@ use URI::Escape qw(uri_escape);
 use Carp qw(croak);
 use Try::Tiny;
 
-our $VERSION = '0.10';
+our $VERSION = '0.15';
 
 use constant {
-    BASE_URL       => 'https://graph.microsoft.com/v1.0',
-    MAX_RETRIES    => 3,
-    RETRY_DELAY    => 1,
+    BASE_URL              => 'https://graph.microsoft.com/v1.0',
+    DEFAULT_MAX_RETRIES   => 3,
+    DEFAULT_RETRY_DELAY   => 1,
+    THROTTLE_WARN_THRESHOLD => 0.8,
 };
 
 sub new {
@@ -28,10 +29,14 @@ sub new {
     my $self = bless {
         auth              => $args{auth},
         use_immutable_ids => $args{use_immutable_ids} // 1,
+        max_retries       => $args{max_retries} // DEFAULT_MAX_RETRIES,
+        retry_delay       => $args{retry_delay} // DEFAULT_RETRY_DELAY,
+        throttle_callback => $args{throttle_callback},
         _ua               => $args{_ua} // LWP::UserAgent->new(
             agent   => 'MS-Graph-Mail-Perl/' . $VERSION,
             timeout => 60,
         ),
+        _last_throttle_pct => undef,
     }, $class;
 
     return $self;
@@ -62,8 +67,10 @@ sub _request {
 
     my $url = $self->_build_url($path, $options{query});
     my $retries = 0;
+    my $max_retries = $self->{max_retries};
+    my $retry_delay = $self->{retry_delay};
 
-    while ($retries < MAX_RETRIES) {
+    while ($retries < $max_retries) {
         my $request = HTTP::Request->new($method => $url);
 
         # Set headers
@@ -91,9 +98,12 @@ sub _request {
 
         my $response = $self->{_ua}->request($request);
 
+        # Monitor throttle proximity header
+        $self->_check_throttle_header($response);
+
         # Handle rate limiting
         if ($response->code == 429) {
-            my $retry_after = $response->header('Retry-After') // (RETRY_DELAY * (2 ** $retries));
+            my $retry_after = $response->header('Retry-After') // ($retry_delay * (2 ** $retries));
             sleep($retry_after);
             $retries++;
             next;
@@ -101,7 +111,7 @@ sub _request {
 
         # Handle service unavailable
         if ($response->code == 503) {
-            sleep(RETRY_DELAY * (2 ** $retries));
+            sleep($retry_delay * (2 ** $retries));
             $retries++;
             next;
         }
@@ -186,6 +196,30 @@ sub _parse_error {
     return $error;
 }
 
+sub _check_throttle_header {
+    my ($self, $response) = @_;
+
+    my $throttle_pct = $response->header('x-ms-throttle-limit-percentage');
+    return unless defined $throttle_pct;
+
+    $self->{_last_throttle_pct} = $throttle_pct;
+
+    # Invoke callback if approaching throttle limit
+    if ($throttle_pct >= THROTTLE_WARN_THRESHOLD && $self->{throttle_callback}) {
+        $self->{throttle_callback}->($throttle_pct);
+    }
+}
+
+sub get_throttle_state {
+    my ($self) = @_;
+
+    return {
+        last_throttle_percentage => $self->{_last_throttle_pct},
+        is_near_limit            => defined $self->{_last_throttle_pct}
+                                    && $self->{_last_throttle_pct} >= THROTTLE_WARN_THRESHOLD,
+    };
+}
+
 sub get_all_pages {
     my ($self, $path, %options) = @_;
 
@@ -260,6 +294,13 @@ Optional parameters:
 
 =item * use_immutable_ids - Enable immutable IDs (default: 1)
 
+=item * max_retries - Maximum retry attempts for rate limiting/errors (default: 3)
+
+=item * retry_delay - Base delay in seconds for exponential backoff (default: 1)
+
+=item * throttle_callback - Code reference called when throttle percentage >= 0.8.
+Receives the throttle percentage as argument.
+
 =back
 
 =head2 get($path, %options)
@@ -281,6 +322,18 @@ Performs a DELETE request.
 =head2 get_all_pages($path, %options)
 
 Fetches all pages of a paginated response.
+
+=head2 get_throttle_state()
+
+Returns a hash reference with throttle status information:
+
+=over 4
+
+=item * last_throttle_percentage - Last observed throttle percentage (0.0-1.8+), or undef
+
+=item * is_near_limit - Boolean, true if percentage >= 0.8
+
+=back
 
 =head1 OPTIONS
 

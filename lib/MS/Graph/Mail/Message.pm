@@ -4,7 +4,7 @@ use 5.026;
 use strict;
 use warnings;
 
-our $VERSION = '0.10';
+our $VERSION = '0.15';
 
 sub new {
     my ($class, $data) = @_;

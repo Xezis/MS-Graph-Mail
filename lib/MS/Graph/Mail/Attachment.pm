@@ -6,7 +6,7 @@ use warnings;
 
 use MIME::Base64 qw(decode_base64 encode_base64);
 
-our $VERSION = '0.10';
+our $VERSION = '0.15';
 
 sub new {
     my ($class, $data) = @_;

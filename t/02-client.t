@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 10;
+use Test::More tests => 15;
 use Test::Exception;
 use Test::MockObject;
 use JSON qw(encode_json decode_json);
@@ -31,7 +31,7 @@ sub create_mock_ua {
     $response->set_always('decoded_content', ref($response_data) ? encode_json($response_data) : $response_data);
     $response->mock('header', sub {
         my ($self, $name) = @_;
-        return $headers->{$name};
+        return $headers->{$name} // undef;
     });
 
     my $ua = Test::MockObject->new();
@@ -250,4 +250,125 @@ subtest 'API error throws exception with details' => sub {
     throws_ok {
         $client->get('/test/nonexistent');
     } qr/ErrorItemNotFound.*not found/i, 'throws with API error details';
+};
+
+subtest 'configurable max_retries and retry_delay' => sub {
+    my $client = MS::Graph::Mail::Client->new(
+        auth        => create_mock_auth(),
+        max_retries => 5,
+        retry_delay => 2,
+    );
+
+    is($client->{max_retries}, 5, 'max_retries is configurable');
+    is($client->{retry_delay}, 2, 'retry_delay is configurable');
+};
+
+subtest 'default retry values' => sub {
+    my $client = MS::Graph::Mail::Client->new(
+        auth => create_mock_auth(),
+    );
+
+    is($client->{max_retries}, 3, 'default max_retries is 3');
+    is($client->{retry_delay}, 1, 'default retry_delay is 1');
+};
+
+subtest 'throttle callback is invoked on high throttle percentage' => sub {
+    my $callback_invoked = 0;
+    my $callback_pct;
+
+    my ($mock_ua) = create_mock_ua({ value => [] });
+    $mock_ua->mock('request', sub {
+        my $response = Test::MockObject->new();
+        $response->set_always('is_success', 1);
+        $response->set_always('code', 200);
+        $response->set_always('decoded_content', encode_json({ value => [] }));
+        $response->mock('header', sub {
+            my ($self, $name) = @_;
+            return 0.85 if $name eq 'x-ms-throttle-limit-percentage';
+            return undef;
+        });
+        return $response;
+    });
+
+    my $client = MS::Graph::Mail::Client->new(
+        auth              => create_mock_auth(),
+        _ua               => $mock_ua,
+        throttle_callback => sub {
+            my ($pct) = @_;
+            $callback_invoked = 1;
+            $callback_pct = $pct;
+        },
+    );
+
+    $client->get('/test');
+
+    ok($callback_invoked, 'throttle callback was invoked');
+    is($callback_pct, 0.85, 'callback received correct percentage');
+};
+
+subtest 'get_throttle_state returns correct state' => sub {
+    my ($mock_ua) = create_mock_ua({ value => [] });
+    $mock_ua->mock('request', sub {
+        my $response = Test::MockObject->new();
+        $response->set_always('is_success', 1);
+        $response->set_always('code', 200);
+        $response->set_always('decoded_content', encode_json({ value => [] }));
+        $response->mock('header', sub {
+            my ($self, $name) = @_;
+            return 0.9 if $name eq 'x-ms-throttle-limit-percentage';
+            return undef;
+        });
+        return $response;
+    });
+
+    my $client = MS::Graph::Mail::Client->new(
+        auth => create_mock_auth(),
+        _ua  => $mock_ua,
+    );
+
+    # Before any request
+    my $state = $client->get_throttle_state();
+    ok(!defined $state->{last_throttle_percentage}, 'no throttle percentage before request');
+    ok(!$state->{is_near_limit}, 'not near limit before request');
+
+    # After request with throttle header
+    $client->get('/test');
+
+    $state = $client->get_throttle_state();
+    is($state->{last_throttle_percentage}, 0.9, 'throttle percentage recorded');
+    ok($state->{is_near_limit}, 'near limit flag is true');
+};
+
+subtest 'throttle callback not invoked below threshold' => sub {
+    my $callback_invoked = 0;
+
+    my ($mock_ua) = create_mock_ua({ value => [] });
+    $mock_ua->mock('request', sub {
+        my $response = Test::MockObject->new();
+        $response->set_always('is_success', 1);
+        $response->set_always('code', 200);
+        $response->set_always('decoded_content', encode_json({ value => [] }));
+        $response->mock('header', sub {
+            my ($self, $name) = @_;
+            return 0.5 if $name eq 'x-ms-throttle-limit-percentage';
+            return undef;
+        });
+        return $response;
+    });
+
+    my $client = MS::Graph::Mail::Client->new(
+        auth              => create_mock_auth(),
+        _ua               => $mock_ua,
+        throttle_callback => sub {
+            $callback_invoked = 1;
+        },
+    );
+
+    $client->get('/test');
+
+    ok(!$callback_invoked, 'throttle callback not invoked below 0.8 threshold');
+
+    my $state = $client->get_throttle_state();
+    is($state->{last_throttle_percentage}, 0.5, 'percentage still recorded');
+    ok(!$state->{is_near_limit}, 'not near limit');
 };

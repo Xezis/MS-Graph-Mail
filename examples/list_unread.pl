@@ -100,13 +100,18 @@ See --help for more information.
 ERROR
 }
 
-# Create Mail client
+# Create Mail client with throttle monitoring
 print "Connecting to Microsoft Graph API...\n" if $verbose;
 
 my $mail = MS::Graph::Mail->new(
     tenant_id     => $tenant_id,
     client_id     => $client_id,
     client_secret => $client_secret,
+    # Optional: callback when approaching rate limits (throttle >= 80%)
+    throttle_callback => sub {
+        my ($pct) = @_;
+        warn "Approaching rate limit: ${pct}%\n" if $verbose;
+    },
 );
 
 # Fetch unread messages
