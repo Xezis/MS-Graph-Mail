@@ -6,7 +6,7 @@ use warnings;
 
 use MIME::Base64 qw(decode_base64 encode_base64);
 
-our $VERSION = '0.20';
+our $VERSION = '0.25';
 
 # Size thresholds for attachment handling
 use constant {

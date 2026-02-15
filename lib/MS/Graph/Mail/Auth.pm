@@ -11,7 +11,7 @@ use URI;
 use Carp qw(croak);
 use Try::Tiny;
 
-our $VERSION = '0.20';
+our $VERSION = '0.25';
 
 sub new {
     my ($class, %args) = @_;

@@ -4,7 +4,7 @@ use 5.026;
 use strict;
 use warnings;
 
-our $VERSION = '0.20';
+our $VERSION = '0.25';
 
 sub new {
     my ($class, $data) = @_;
@@ -32,10 +32,12 @@ sub new {
         to_recipients       => _parse_recipients($data->{toRecipients}),
         cc_recipients       => _parse_recipients($data->{ccRecipients}),
         bcc_recipients      => _parse_recipients($data->{bccRecipients}),
-        reply_to            => _parse_recipients($data->{replyTo}),
-        categories          => $data->{categories} // [],
-        flag                => $data->{flag},
-        _raw                => $data,
+        reply_to                    => _parse_recipients($data->{replyTo}),
+        categories                  => $data->{categories} // [],
+        flag                        => $data->{flag},
+        internet_message_headers    => _parse_internet_headers($data->{internetMessageHeaders}),
+        _internet_headers_raw       => $data->{internetMessageHeaders} // [],
+        _raw                        => $data,
     }, $class;
 
     return $self;
@@ -54,6 +56,17 @@ sub _parse_recipients {
     my ($recipients) = @_;
     return [] unless $recipients && ref($recipients) eq 'ARRAY';
     return [map { _parse_recipient($_) } @$recipients];
+}
+
+sub _parse_internet_headers {
+    my ($headers) = @_;
+    return {} unless $headers && ref($headers) eq 'ARRAY';
+    my %parsed;
+    for my $header (@$headers) {
+        next unless $header->{name};
+        push @{$parsed{lc($header->{name})}}, $header->{value};
+    }
+    return \%parsed;
 }
 
 # Accessors
@@ -81,7 +94,9 @@ sub bcc_recipients      { shift->{bcc_recipients} }
 sub reply_to            { shift->{reply_to} }
 sub categories          { shift->{categories} }
 sub flag                { shift->{flag} }
-sub raw                 { shift->{_raw} }
+sub raw                         { shift->{_raw} }
+sub internet_message_headers     { shift->{internet_message_headers} }
+sub internet_message_headers_raw { shift->{_internet_headers_raw} }
 
 # Convenience methods
 sub from_address {
@@ -102,6 +117,35 @@ sub to_addresses {
 sub is_unread {
     my $self = shift;
     return !$self->{is_read};
+}
+
+sub get_header {
+    my ($self, $name) = @_;
+    my $values = $self->{internet_message_headers}{lc($name)};
+    return undef unless $values && @$values;
+    return $values->[0];
+}
+
+sub get_header_values {
+    my ($self, $name) = @_;
+    return $self->{internet_message_headers}{lc($name)} // [];
+}
+
+sub in_reply_to {
+    my ($self) = @_;
+    return $self->get_header('In-Reply-To');
+}
+
+sub references {
+    my ($self) = @_;
+    return $self->get_header('References');
+}
+
+sub references_list {
+    my ($self) = @_;
+    my $refs = $self->references;
+    return [] unless $refs;
+    return [split /\s+/, $refs];
 }
 
 sub to_string {
@@ -176,6 +220,14 @@ Creates a new Message object from API response data.
 
 =item * bcc_recipients - Array of BCC recipient hashes
 
+=item * conversation_id - Exchange conversation grouping ID
+
+=item * internet_message_id - RFC 5322 Message-ID
+
+=item * internet_message_headers - Parsed hash of internet message headers (lowercase keys)
+
+=item * internet_message_headers_raw - Original array of {name, value} hashes from API
+
 =back
 
 =head2 Convenience Methods
@@ -191,6 +243,16 @@ Creates a new Message object from API response data.
 =item * is_unread - Opposite of is_read
 
 =item * to_string - Human-readable summary
+
+=item * get_header($name) - Get first value of an internet message header (case-insensitive)
+
+=item * get_header_values($name) - Get all values for a header as arrayref
+
+=item * in_reply_to - Shortcut for get_header('In-Reply-To')
+
+=item * references - Shortcut for get_header('References')
+
+=item * references_list - References header split into arrayref of Message-IDs
 
 =back
 

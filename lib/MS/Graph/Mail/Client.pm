@@ -12,7 +12,7 @@ use URI::Escape qw(uri_escape);
 use Carp qw(croak);
 use Try::Tiny;
 
-our $VERSION = '0.20';
+our $VERSION = '0.25';
 
 use constant {
     BASE_URL              => 'https://graph.microsoft.com/v1.0',
