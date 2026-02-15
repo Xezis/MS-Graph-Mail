@@ -11,6 +11,9 @@ A Perl module for interacting with Microsoft Graph Mail API. Manage emails acros
 - **Attachments** - Download and send file attachments (including large files up to 150MB)
 - **Pagination** - Automatic handling of paginated results
 - **Rate limit handling** - Automatic retry with backoff and throttle monitoring
+- **Email tracking** - Send emails with tracking IDs, match incoming replies
+- **Webhook subscriptions** - Change notifications for new messages
+- **Delta queries** - Incremental sync for efficient mailbox monitoring
 
 ## Requirements
 
@@ -51,6 +54,7 @@ cpanm LWP::UserAgent LWP::Protocol::https JSON URI Try::Tiny
 |------------|-------------|--------------|
 | `Mail.ReadWrite` | Read and write mail in all mailboxes | List, read, move, delete messages |
 | `Mail.Send` | Send mail as any user | Send and forward emails |
+| `Mail.Read` | Read mail in all mailboxes | Webhook subscriptions |
 
 4. Click "Grant admin consent for [Your Organization]"
 
@@ -79,8 +83,11 @@ You'll need:
 | Get attachments | `Mail.ReadWrite` |
 | Send mail | `Mail.Send` |
 | Forward mail | `Mail.Send` |
+| Tracked send | `Mail.ReadWrite` + `Mail.Send` |
+| Webhook subscriptions | `Mail.Read` |
+| Delta queries | `Mail.ReadWrite` |
 
-**Minimum for full functionality**: `Mail.ReadWrite` + `Mail.Send`
+**Minimum for full functionality**: `Mail.ReadWrite` + `Mail.Send` (+ `Mail.Read` for webhooks)
 
 ## Quick Start
 
@@ -263,6 +270,150 @@ $mail->send_mail(
 );
 ```
 
+### Tracked Sending
+
+Use `send_mail_tracked()` to send emails and capture tracking identifiers for reply matching. This uses the draft-then-send pattern to obtain `conversationId` and `internetMessageId`.
+
+```perl
+my $tracking = $mail->send_mail_tracked(
+    user_id   => 'sender@domain.com',
+    to        => ['recipient@example.com'],
+    subject   => 'Invoice #1234',
+    body      => '<p>Please review the attached invoice.</p>',
+    body_type => 'HTML',
+);
+
+# Store tracking data in your database
+# $tracking = {
+#     message_id          => 'AAMkAD...',
+#     conversation_id     => 'AAQk...',
+#     internet_message_id => '<msg-id@server.com>',
+#     tracking_token      => 'REF-a3f9b21c',
+#     subject             => 'Invoice #1234',
+# }
+```
+
+**Optional: embed tracking token in subject** (disabled by default to preserve original subject):
+
+```perl
+my $tracking = $mail->send_mail_tracked(
+    user_id             => 'sender@domain.com',
+    to                  => ['recipient@example.com'],
+    subject             => 'Invoice #1234',
+    body                => 'Please review.',
+    embed_subject_token => 1,  # Subject becomes: [REF-a3f9b21c] Invoice #1234
+);
+```
+
+**Optional: provide your own tracking token:**
+
+```perl
+my $tracking = $mail->send_mail_tracked(
+    user_id        => 'sender@domain.com',
+    to             => ['recipient@example.com'],
+    subject        => 'Invoice #1234',
+    body           => 'Please review.',
+    tracking_token => 'INV-2026-001',
+);
+```
+
+### Reply Matching
+
+Match incoming messages to previously sent emails using a 5-signal cascade. The library is stateless -- your application owns the database.
+
+**Step 1: Extract signals from an incoming message for DB lookup:**
+
+```perl
+my $signals = $mail->extract_reply_signals(message => $incoming_msg);
+# $signals = {
+#     in_reply_to     => '<original-msg-id@server.com>',
+#     references      => ['<id1>', '<id2>'],
+#     conversation_id => 'AAQk...',
+#     tracking_token  => 'REF-a3f9b21c',  # or undef
+# }
+
+# Use these values for indexed queries against your outbound tracking table:
+# SELECT * FROM sent_emails
+#   WHERE internet_message_id IN ($signals->{in_reply_to}, @{$signals->{references}})
+#      OR conversation_id = $signals->{conversation_id}
+#      OR tracking_token = $signals->{tracking_token}
+```
+
+**Step 2: Score pre-filtered candidates:**
+
+```perl
+my $result = $mail->match_reply(
+    message           => $incoming_msg,
+    outbound_tracking => \@db_candidates,  # small set from DB query
+    enable_fuzzy      => 0,
+);
+
+if ($result) {
+    printf "Matched via %s (confidence: %s)\n",
+        $result->{method}, $result->{confidence};
+    # $result->{outbound} is the matched tracking record
+}
+```
+
+Match signals in priority order:
+
+| Signal | Confidence | Field |
+|--------|-----------|-------|
+| In-Reply-To header | highest | `internet_message_id` |
+| References header | high | `internet_message_id` |
+| conversationId | medium-high | `conversation_id` |
+| Subject tracking token | high | `tracking_token` |
+| Fuzzy sender/subject | low (opt-in) | `recipient_email` + `subject` |
+
+### Webhook Subscriptions
+
+Create webhook subscriptions to receive notifications when new messages arrive. Maximum subscription lifetime is ~2.94 days; renew before expiration.
+
+```perl
+# Create subscription
+my $sub = $mail->create_subscription(
+    user_id             => 'user@domain.com',
+    notification_url    => 'https://yourapp.example.com/api/webhooks',
+    expiration_datetime => '2026-02-18T11:00:00.0000000Z',
+    change_type         => 'created',
+    client_state        => 'your-secret-token',
+);
+
+# Renew before expiration
+$mail->renew_subscription(
+    subscription_id     => $sub->{id},
+    expiration_datetime => '2026-02-21T11:00:00.0000000Z',
+);
+
+# Delete when no longer needed
+$mail->delete_subscription(subscription_id => $sub->{id});
+```
+
+### Delta Queries
+
+Use delta queries for efficient incremental mailbox sync instead of polling with `list_messages()`.
+
+```perl
+# Initial sync - fetches all messages
+my $result = $mail->get_messages_delta(
+    user_id => 'user@domain.com',
+    folder  => 'Inbox',
+    select  => [qw(subject from internetMessageHeaders conversationId)],
+);
+
+my @messages   = @{$result->{messages}};
+my $delta_link = $result->{delta_link};  # persist this in your database
+
+# Subsequent sync - only changes since last call
+my $changes = $mail->get_messages_delta(
+    user_id     => 'user@domain.com',
+    delta_token => $delta_link,
+);
+
+my @new_messages   = @{$changes->{messages}};
+my $new_delta_link = $changes->{delta_link};  # update stored delta_link
+```
+
 ### Forward Email
 
 ```perl
@@ -308,6 +459,26 @@ for my $att (@$attachments) {
 
     $full_att->save_to_file("/downloads/" . $att->name);
 }
+```
+
+### Internet Message Headers
+
+Access RFC 5322 headers on message objects. Include `internetMessageHeaders` in your `$select` to retrieve them.
+
+```perl
+my $message = $mail->get_message(
+    user_id    => 'user@domain.com',
+    message_id => 'AAMkAD...',
+    select     => [qw(id subject internetMessageHeaders conversationId)],
+);
+
+# Get a specific header (case-insensitive)
+my $in_reply_to = $message->in_reply_to;
+my $references  = $message->references;
+my $ref_list    = $message->references_list;  # arrayref of Message-IDs
+
+# Get any header by name
+my $mailer = $message->get_header('X-Mailer');
 ```
 
 ## Immutable IDs
@@ -421,8 +592,8 @@ for my $recipient (@recipients) {
 
 - Use `select` to limit returned fields
 - Use `filter` to narrow results server-side
-- Consider delta queries for incremental sync
-- Use webhooks instead of polling when possible
+- Use [delta queries](#delta-queries) for incremental sync
+- Use [webhook subscriptions](#webhook-subscriptions) instead of polling when possible
 
 See [LIMITS.md](LIMITS.md) for detailed Microsoft Graph rate limit documentation.
 
