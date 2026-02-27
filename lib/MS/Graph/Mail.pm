@@ -787,7 +787,7 @@ sub get_attachment {
 
     my $query = {};
     # Request large file content
-    $query->{'$select'} = 'id,name,contentType,size,contentBytes'
+    $query->{'$select'} = 'id,name,contentType,size'
         unless $args{metadata_only};
 
     my $response = $self->{_client}->get($path, query => $query);
