@@ -13,7 +13,7 @@ use MS::Graph::Mail::Message;
 use MS::Graph::Mail::Folder;
 use MS::Graph::Mail::Attachment;
 
-our $VERSION = '0.25';
+our $VERSION = '0.26';
 
 sub new {
     my ($class, %args) = @_;

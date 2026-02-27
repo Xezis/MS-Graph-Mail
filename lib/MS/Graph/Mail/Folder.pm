@@ -4,7 +4,7 @@ use 5.026;
 use strict;
 use warnings;
 
-our $VERSION = '0.25';
+our $VERSION = '0.26';
 
 # Well-known folder names
 our %WELL_KNOWN_FOLDERS = (
